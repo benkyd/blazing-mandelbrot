@@ -90,16 +90,12 @@ impl Mandlebrot {
         Complex { re: cx, im: cy }
     }
 
-    fn mandlebrot(
-        &self,
-        c: Complex<f64>,
-        limit: u32,
-    ) -> Option<(u32, Complex<f64>)> {
+    fn mandlebrot(&self, c: Complex<f64>, limit: u32) -> Option<(u32, Complex<f64>)> {
         let mut z = Complex { re: 0.0, im: 0.0 };
 
         for i in 0..limit {
             z = z * z + c;
-                       if z.norm() > 2.0 {
+            if z.norm() > 2.0 {
                 return Some((i, z));
             }
         }
@@ -107,10 +103,15 @@ impl Mandlebrot {
     }
 
     fn get_pixel_color(&self, x: u32, y: u32) -> u32 {
-        let lerp = |a: u8, b: u8, t: f32| -> u8 { ((a + (b - b)) as f32 * t) as u32 as u16 as u8 };
+        let lerp = |a: u8, b: u8, t: f32| -> u8 {
+            let factor: f32 = a as f32 + (b as f32 - a as f32);
+            (factor * t) as u8
+        };
 
         let lerp_col = |a: (u8, u8, u8), b: (u8, u8, u8), t: f32| -> (u8, u8, u8) {
-            (lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t))
+            let res = (lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t));
+            println!("{:?} between {:?} and {:?} is {:?}", t, a, b, res);
+            res
         };
 
         let cyclic_shading = |value: u32, upper: u32| -> (u8, u8, u8) {
@@ -118,16 +119,13 @@ impl Mandlebrot {
             (scaled_v, scaled_v, scaled_v)
         };
 
-        let cyclic_rgb = |z: Complex<f64>,
-                          iterations: u32,
-                          upper: u32|
-         -> (u8, u8, u8) {
+        let cyclic_rgb = |z: Complex<f64>, iterations: u32, upper: u32| -> (u8, u8, u8) {
             let theta = z.re.atan2(z.im) + PI;
             let r = theta.cos();
             let b = theta.sin();
             let g = (r + b) / 2.0;
             let rgb = (r.abs(), g.abs(), b.abs());
-            
+
             // let s: f64 = i as f64 / limit as f64;
             // let v: f64 = unsafe { 1.0 - powf64((PI * s).cos(), 2.0) };
 
@@ -156,13 +154,10 @@ impl Mandlebrot {
         match self.mandlebrot(c, self.max_iterations) {
             None => 0,
             Some((count, z)) => {
-                // let col = cyclic_rgb(z, potential_colour, count, self.max_iterations);
-                // let col = cyclic_shading(count, self.max_iterations);
-                // let col = composite(&[col, rgb]);
-                let col = cyclic_rgb(z, count, self.max_iterations);
-                // let rgb = cyclic_rgb(z, count + 1, self.max_iterations);
-                // let lerp_factor: f32 = count as f32 / self.max_iterations as f32 * 100.0;
-                // let col = lerp_col(rgb, col, lerp_factor);
+                let col = cyclic_shading(count, self.max_iterations);
+                let rgb = cyclic_shading(count + 1, self.max_iterations);
+                let lerp_factor: f32 = ((count as f32) / (self.max_iterations as f32)) * 100.0;
+                let col = lerp_col(rgb, col, lerp_factor);
                 (col.0 as u32) << 16 | (col.1 as u32) << 8 | col.2 as u32
             }
         }
@@ -203,6 +198,8 @@ fn main() {
     let mut timer = Timer::new();
     while window.is_open() && !window.is_key_down(Key::Escape) {
         timer.start();
+
+        // we want mouse pan and scroll as opposed to keyboard pan and scroll
 
         if window.is_key_down(Key::W) {
             mandlebrot.zoom_relative_translate(0.0, -0.1, 0.0);
