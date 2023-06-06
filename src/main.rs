@@ -1,6 +1,5 @@
 #![feature(core_intrinsics)]
 use std::f64::consts::PI;
-use std::{arch::x86_64::*, intrinsics::powf64};
 
 use std::time::Duration;
 
@@ -104,8 +103,11 @@ impl Mandlebrot {
 
     fn get_pixel_color(&self, x: u32, y: u32) -> u32 {
         let lerp = |a: u8, b: u8, t: f32| -> u8 {
-            let factor: f32 = a as f32 + (b as f32 - a as f32);
-            (factor * t) as u8
+            let (x, y) = match (a as f32, b as f32) {
+                (a, b) if a < b => (a, b),
+                (a, b) => (b, a),
+            };
+            (x + (y - x) * t.clamp(0.0, 1.0)).round() as u32 as u16 as u8
         };
 
         let lerp_col = |a: (u8, u8, u8), b: (u8, u8, u8), t: f32| -> (u8, u8, u8) {
@@ -119,45 +121,14 @@ impl Mandlebrot {
             (scaled_v, scaled_v, scaled_v)
         };
 
-        let cyclic_rgb = |z: Complex<f64>, iterations: u32, upper: u32| -> (u8, u8, u8) {
-            let theta = z.re.atan2(z.im) + PI;
-            let r = theta.cos();
-            let b = theta.sin();
-            let g = (r + b) / 2.0;
-            let rgb = (r.abs(), g.abs(), b.abs());
-
-            // let s: f64 = i as f64 / limit as f64;
-            // let v: f64 = unsafe { 1.0 - powf64((PI * s).cos(), 2.0) };
-
-            let rgb: (u8, u8, u8) = (
-                ((rgb.0) * 255.) as u8,
-                ((rgb.1) * 255.) as u8,
-                ((rgb.2) * 255.) as u8,
-            );
-            rgb
-        };
-
-        let composite = |composites: &[(u8, u8, u8)]| -> (u8, u8, u8) {
-            let new_col: (u32, u32, u32) = composites.iter().fold((0, 0, 0), |new, col| {
-                let col = (col.0 as u32, col.1 as u32, col.2 as u32);
-                (new.0 + col.0, new.1 + col.1, new.2 + col.2)
-            });
-            let new_col: (u8, u8, u8) = (
-                (new_col.0 / composites.len() as u32) as u8,
-                (new_col.1 / composites.len() as u32) as u8,
-                (new_col.2 / composites.len() as u32) as u8,
-            );
-            new_col
-        };
-
         let c = self.get_pixel(x, y);
         match self.mandlebrot(c, self.max_iterations) {
             None => 0,
-            Some((count, z)) => {
+            Some((count, _z)) => {
                 let col = cyclic_shading(count, self.max_iterations);
-                let rgb = cyclic_shading(count + 1, self.max_iterations);
-                let lerp_factor: f32 = ((count as f32) / (self.max_iterations as f32)) * 100.0;
-                let col = lerp_col(rgb, col, lerp_factor);
+                let col1 = cyclic_shading(count + 1, self.max_iterations);
+                let lerp_factor: f32 = ((count as f32) / (self.max_iterations as f32));
+                let col = lerp_col(col, col1, lerp_factor);
                 (col.0 as u32) << 16 | (col.1 as u32) << 8 | col.2 as u32
             }
         }
@@ -181,10 +152,45 @@ impl Mandlebrot {
     }
 }
 
+struct FixedPoint512([u64; 8]);
+
+impl FixedPoint512 {
+    fn new() -> Self {
+        let mut fp = FixedPoint512([0; 8]);
+        fp.0[7] = 18_446_744_073_709_551_612;
+        fp
+    }
+}
+
+impl std::fmt::Display for FixedPoint512 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::new();
+        for i in 0..8 {
+            s.push_str(&format!("{:0>16}", self.0[i].to_string()));
+        }
+        write!(f, "{}", s)
+    }
+}
+
+impl std::ops::Add for FixedPoint512 {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let mut res = FixedPoint512::new();
+        let mut carry = 0;
+        for i in 0..8 {
+            let (val, carry1) = self.0[i].overflowing_add(rhs.0[i]);
+            let (val, carry2) = val.overflowing_add(carry);
+            res.0[i] = val;
+            carry = if carry1 || carry2 { 1 } else { 0 };
+        }
+        res
+    }
+}
+
 fn main() {
     let mut mandlebrot = Mandlebrot::new();
 
-    let mut buffer: Vec<u32> = vec![0; mandlebrot.view_width * mandlebrot.view_height];
     let mut window = Window::new(
         "Mandlebrot",
         mandlebrot.view_width,
@@ -230,7 +236,7 @@ fn main() {
             println!("Iterations: {}", mandlebrot.max_iterations);
         }
 
-        buffer = mandlebrot.get_buffer();
+        let buffer = mandlebrot.get_buffer();
 
         timer.end();
 
