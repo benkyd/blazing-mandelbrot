@@ -102,20 +102,6 @@ impl Mandlebrot {
     }
 
     fn get_pixel_color(&self, x: u32, y: u32) -> u32 {
-        let lerp = |a: u8, b: u8, t: f32| -> u8 {
-            let (x, y) = match (a as f32, b as f32) {
-                (a, b) if a < b => (a, b),
-                (a, b) => (b, a),
-            };
-            (x + (y - x) * t.clamp(0.0, 1.0)).round() as u32 as u16 as u8
-        };
-
-        let lerp_col = |a: (u8, u8, u8), b: (u8, u8, u8), t: f32| -> (u8, u8, u8) {
-            let res = (lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t));
-            println!("{:?} between {:?} and {:?} is {:?}", t, a, b, res);
-            res
-        };
-
         let cyclic_shading = |value: u32, upper: u32| -> (u8, u8, u8) {
             let scaled_v: u8 = ((value * upper) / 255) as u8;
             (scaled_v, scaled_v, scaled_v)
@@ -126,9 +112,6 @@ impl Mandlebrot {
             None => 0,
             Some((count, _z)) => {
                 let col = cyclic_shading(count, self.max_iterations);
-                let col1 = cyclic_shading(count + 1, self.max_iterations);
-                let lerp_factor: f32 = ((count as f32) / (self.max_iterations as f32));
-                let col = lerp_col(col, col1, lerp_factor);
                 (col.0 as u32) << 16 | (col.1 as u32) << 8 | col.2 as u32
             }
         }
