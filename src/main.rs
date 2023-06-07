@@ -1,10 +1,11 @@
 #![feature(core_intrinsics)]
-use std::f64::consts::PI;
+use rand::Rng;
+use std::f64::{consts::PI, INFINITY};
 
 use std::time::Duration;
 
 use minifb::{Key, Window, WindowOptions};
-use num::Complex;
+use num::{Complex, Float};
 use rayon::prelude::*;
 
 struct Timer {
@@ -55,20 +56,24 @@ struct Mandlebrot {
     pub view_x: f64,
     pub view_y: f64,
     pub view_zoom: f64,
+    pub supersampling_range: f64,
+    pub supersampling_min_dist: f64,
     pub max_iterations: u32,
 }
 
 impl Mandlebrot {
     fn new() -> Mandlebrot {
-        let height: usize = 800;
-        let width: usize = 800;
+        let height: usize = 1800;
+        let width: usize = 1800;
         Mandlebrot {
             view_width: width,
             view_height: height,
-            view_x: 0.0,
+            view_x: -0.6,
             view_y: 0.0,
-            view_zoom: 1.0,
-            max_iterations: 512,
+            view_zoom: 2.2,
+            supersampling_range: 4.0,
+            supersampling_min_dist: 0.5,
+            max_iterations: 1000,
         }
     }
 
@@ -83,19 +88,137 @@ impl Mandlebrot {
         );
     }
 
-    fn get_pixel(&self, x: u32, y: u32) -> Complex<f64> {
+    fn mandlebrot_sochastic_supersample(&self, x: u32, y: u32, limit: u32) -> Option<u32> {
+        // first we need to make the pisson disc of out sampling point and generate c for them
         let cx = self.view_zoom * (x as f64 / self.view_width as f64 - 0.5) + self.view_x;
         let cy = self.view_zoom * (y as f64 / self.view_height as f64 - 0.5) + self.view_y;
-        Complex { re: cx, im: cy }
+
+        // this is the fast bridson algorithm first outlined here:
+        // https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph07-poissondisk.pdf
+        let pisson_disc_sample = |cx: f64, cy: f64| -> Vec<Complex<f64>> {
+            let mut ret = Vec::<Complex<f64>>::new();
+            let mut rng = rand::thread_rng();
+
+            let cell_size = self.supersampling_min_dist / 1.41421356237; // sqrt of 2
+            let grid_size = (self.supersampling_range / cell_size).ceil();
+
+            let mut grid = Vec::<(f64, f64)>::with_capacity(
+                (self.supersampling_range * self.supersampling_range) as usize,
+            );
+            let mut proc = Vec::<(f64, f64)>::new(); // treat as a stack
+
+            let in_area = |p: (f64, f64)| -> bool {
+                p.0 > 0.0
+                    && p.0 < self.supersampling_range
+                    && p.1 > 0.0
+                    && p.1 < self.supersampling_range
+            };
+
+            let squared_distance = |a: (f64, f64), b: (f64, f64)| -> f64 {
+                let delta_x = a.0 - b.0;
+                let delta_y = a.1 - b.1;
+                delta_x * delta_x * delta_y * delta_y
+            };
+
+            let point_around = |p: (f64, f64)| -> (f64, f64) {
+                let radius =
+                    self.supersampling_min_dist * (rng.gen_range(0.0..3.0) + 1.0f64).sqrt();
+                let angle = rng.gen_range(0.0..PI * 2.0);
+                (p.0 + angle.cos() * radius, p.1 + angle.sin() * radius)
+            };
+
+            let mut set = |p: (f64, f64)| {
+                let cell = ((p.0 / cell_size) as usize, (p.1 / cell_size) as usize);
+                grid[cell.1 * self.supersampling_range as usize + cell.0] = p;
+            };
+
+            let mut add = |p: (f64, f64)| {
+                let c = Complex { re: p.0, im: p.1 };
+                ret.push(c);
+                proc.push(p);
+                set(p);
+            };
+
+            let mut p_too_close = |p: (f64, f64)| -> bool {
+                let xi = (p.0 / cell_size).floor() as usize;
+                let yi = (p.1 / cell_size).floor() as usize;
+
+                if grid[yi * grid_size as usize + xi].0 != INFINITY {
+                    return true;
+                }
+
+                let min_dist_sq = self.supersampling_min_dist * self.supersampling_min_dist;
+                let minx = (xi - 2).max(0);
+                let miny = (yi - 2).max(0);
+                let maxx = (xi + 2).min(grid_size as usize - 1);
+                let maxy = (yi + 2).min(grid_size as usize - 1);
+
+                for y in miny..=maxy {
+                    for x in minx..=maxx {
+                        let point = grid[y * grid_size as usize + x];
+                        let exists = point.0 != INFINITY;
+                        if exists && squared_distance(p, point) < min_dist_sq {
+                            return true;
+                        }
+                    }
+                }
+
+                false
+            };
+
+            let start_p = (
+                rng.gen_range(0.0..self.supersampling_range),
+                rng.gen_range(0.0..self.supersampling_range),
+            );
+            add(start_p);
+
+            while !proc.is_empty() {
+                let point = proc.pop().unwrap(); // we can safely unwrap here
+                for i in 0..30 {
+                    let p = point_around(point);
+                    if in_area(p) && !p_too_close(p) {
+                        add(p);
+                    }
+                }
+            }
+
+            ret
+        };
+
+        let samples = pisson_disc_sample(cx, cy);
+        let samples: Vec<Option<u32>> = samples
+            .iter()
+            .map(|c| -> Option<u32> {
+                let mut z = Complex { re: 0.0, im: 0.0 };
+
+                for i in 0..limit {
+                    z = z * z + c;
+                    if z.norm() > 2.0 {
+                        return Some(i);
+                    }
+                }
+                None
+            })
+            .collect();
+        let summed_iterations: u32 = samples
+            .iter()
+            .map(|x| if x.is_some() { x.unwrap() } else { 0 })
+            .sum();
+
+        Some(summed_iterations / samples.len() as u32)
     }
 
-    fn mandlebrot(&self, c: Complex<f64>, limit: u32) -> Option<(u32, Complex<f64>)> {
+    fn mandlebrot(&self, x: u32, y: u32, limit: u32) -> Option<u32> {
+        let cx = self.view_zoom * (x as f64 / self.view_width as f64 - 0.5) + self.view_x;
+        let cy = self.view_zoom * (y as f64 / self.view_height as f64 - 0.5) + self.view_y;
+
+        let c = Complex { re: cx, im: cy };
         let mut z = Complex { re: 0.0, im: 0.0 };
 
         for i in 0..limit {
             z = z * z + c;
             if z.norm() > 2.0 {
-                return Some((i, z));
+                return Some(i);
             }
         }
         None
@@ -107,10 +230,9 @@ impl Mandlebrot {
             (scaled_v, scaled_v, scaled_v)
         };
 
-        let c = self.get_pixel(x, y);
-        match self.mandlebrot(c, self.max_iterations) {
+        match self.mandlebrot(x, y, self.max_iterations) {
             None => 0,
-            Some((count, _z)) => {
+            Some(count) => {
                 let col = cyclic_shading(count, self.max_iterations);
                 (col.0 as u32) << 16 | (col.1 as u32) << 8 | col.2 as u32
             }
